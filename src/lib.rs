@@ -390,6 +390,8 @@ pub struct Perf {
     pub info: Info,
     pub event_attributes: Vec<EventAttributes>,
     pub events: Vec<Event>,
+    pub start: u64,
+    pub end: u64
 }
 
 fn read_raw<T>(file: &mut Read) -> io::Result<T> {
@@ -600,6 +602,8 @@ pub fn read_perf_file<P: std::convert::AsRef<std::path::Path>>(path: &P) -> Resu
     let mut events = Vec::new();
     let mut position = file.seek(io::SeekFrom::Start(header.data.offset))?;
     let mut size = 0;
+    let mut start = std::u64::MAX;
+    let mut end = 0;
     while size < header.data.size {
         let event_header = read_raw::<EventHeader>(&mut file)?;
         debug!("{:x} {:?}", position, event_header);
@@ -615,7 +619,12 @@ pub fn read_perf_file<P: std::convert::AsRef<std::path::Path>>(path: &P) -> Resu
                 events.push(Event::MMap{pid: part.pid, tid: part.tid, addr:part.addr, pgoff: part.pgoff, len: part.len, filename: filename, sample_id: s});
             },
             RecordType::Sample => {
-                events.push(read_sample(&mut file, &sample_format)?);
+                let sample = read_sample(&mut file, &sample_format)?;
+                if let Event::Sample{time: Some(time), ..} = sample {
+                    start = std::cmp::min(start, time);
+                    end = std::cmp::max(end, time);
+                }
+                events.push(sample);
             },
             RecordType::MMap2 => {
                 let part = read_raw::<MMap2Part>(&mut file)?;
@@ -631,6 +640,8 @@ pub fn read_perf_file<P: std::convert::AsRef<std::path::Path>>(path: &P) -> Resu
                 let part = read_raw::<ExitPart>(&mut file)?;
                 let s = read_sample_id(&mut file, &sample_format)?;
                 events.push(Event::Exit{pid: part.pid, ppid: part.ppid, tid: part.tid, ptid: part.ptid, time: part.time, sample_id: s});
+                start = std::cmp::min(start, part.time);
+                end = std::cmp::max(end, part.time);
             },
             RecordType::Comm => {
                 let part = read_raw::<CommPart>(&mut file)?;
@@ -647,6 +658,6 @@ pub fn read_perf_file<P: std::convert::AsRef<std::path::Path>>(path: &P) -> Resu
         size += event_header.size as u64;
         position = file.seek(io::SeekFrom::Start(header.data.offset + size))?;
     }
-    Ok(Perf{info: info, event_attributes: attrs, events: events})
+    Ok(Perf{info: info, event_attributes: attrs, events: events, start: start, end: end})
 }
 
