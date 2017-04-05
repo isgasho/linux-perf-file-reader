@@ -467,27 +467,43 @@ struct HeaderInfoReader<'a> {
     flags: HeaderFlags
 }
 
+fn collect_n<T,E,F>(count: usize, mut function: F) -> std::result::Result<Vec<T>, E> where F:FnMut() -> std::result::Result<T, E> {
+    let mut v = Vec::with_capacity(count);
+    for _ in 0..count {
+        v.push(function()?);
+    }
+    Ok(v)
+}
+
+fn bits_count(mut v: u64) -> u8 {
+    let mut c = 0;
+    while v != 0 {
+        v &= v - 1;
+        c += 1;
+    }
+    c
+}
+
 impl<'a> HeaderInfoReader<'a> {
     fn new(file: &'a mut File, header: &PerfHeader) -> io::Result<Self> {
         file.seek(io::SeekFrom::Start(header.data.offset + header.data.size))?;
-        let mut sections = Vec::new();
-        loop {
-            let section = read_raw::<PerfFileSection>(file)?;
-            if section.offset == 0 {
-                break;
-            }
-            sections.push(section);
-
-        }
+        let sections = collect_n(bits_count(header.flags.bits()) as usize, || read_raw::<PerfFileSection>(file))?;
+        debug!("have {} info records, start at 0x{:x}", sections.len(), header.data.offset + header.data.size);
         Ok(HeaderInfoReader{ file: file, sections: sections, current: 0, flags: header.flags })
     }
 
+    fn seek(&mut self) -> io::Result<()> {
+        let section = &self.sections[self.current];
+        debug!("Read section {}, size {}", self.current, section.size);
+        self.file.seek(io::SeekFrom::Start(section.offset))?;
+        self.current += 1;
+        Ok(())
+    }
+ 
     fn get_string(&mut self, flag: HeaderFlags) -> io::Result<Option<String>> {
         if self.flags.contains(flag) && self.sections.len() > self.current {
-            let section = &self.sections[self.current];
-            self.file.seek(io::SeekFrom::Start(section.offset))?;
+            self.seek()?;
             let size = read_raw::<u32>(self.file)?;
-            self.current += 1;
             Ok(Some(read_string(self.file, size as usize)?))
         } else {
             Ok(None)
@@ -496,16 +512,12 @@ impl<'a> HeaderInfoReader<'a> {
 
     fn get_string_array(&mut self, flag: HeaderFlags) -> io::Result<Option<Vec<String>>> {
         if self.flags.contains(flag) && self.sections.len() > self.current {
-            let section = &self.sections[self.current];
-            self.file.seek(io::SeekFrom::Start(section.offset))?;
-            let count = read_raw::<u32>(self.file)?;
-            let mut array = Vec::new();
-            for _ in 0..count {
-                let size = read_raw::<u32>(self.file)?;
-                array.push(read_string(self.file, size as usize)?);
-            }
-            self.current += 1;
-            Ok(Some(array))
+            self.seek()?;
+            let count = read_raw::<u32>(self.file)? as usize;
+            Ok(Some(collect_n(count, || {
+                let size = read_raw::<u32>(self.file)? as usize;
+                read_string(self.file,size)
+            })?))
         } else {
             Ok(None)
         }
@@ -513,8 +525,8 @@ impl<'a> HeaderInfoReader<'a> {
 
     fn get<T>(&mut self, flag: HeaderFlags) -> io::Result<Option<T>> {
         if self.flags.contains(flag) && self.sections.len() > self.current {
+            self.seek()?;
             let v = read_raw::<T>(self.file)?;
-            self.current += 1;
             Ok(Some(v))
         } else {
             Ok(None)
@@ -523,6 +535,7 @@ impl<'a> HeaderInfoReader<'a> {
 
     fn skip(&mut self, flag: HeaderFlags) {
         if self.flags.contains(flag) && self.sections.len() > self.current {
+            debug!("Skip section {} {:?}", self.current, flag);
             self.current += 1;
         }
     }
@@ -546,7 +559,6 @@ fn read_info(file: &mut File, header: &PerfHeader) -> io::Result<(Info)> {
     let total_memory = reader.get::<u64>(header_flags::TOTAL_MEM)?;
     let command_line = reader.get_string_array(header_flags::CMDLINE)?;
     reader.skip(header_flags::EVENT_DESC);
-    //TODO: check is all parsed?
     let cpu_topology = reader.get_string_array(header_flags::CPU_TOPOLOGY)?;
     reader.skip(header_flags::NUMA_TOPOLOGY);
     reader.skip(header_flags::BRANCH_STACK);
@@ -584,12 +596,15 @@ pub fn read_perf_file_info<P: std::convert::AsRef<std::path::Path>>(path: &P) ->
 
 pub fn read_perf_file<P: std::convert::AsRef<std::path::Path>>(path: &P) -> Result<(Perf)> {
     let mut file = File::open(path)?;
+    debug!("read header");
     let header = read_raw::<PerfHeader>(&mut file)?;
     if header.magic != PERF_FILE_SIGNATURE {
         return Err(ErrorKind::InvalidSinature.into());
     }
+    debug!("header: {:?}\nread info", header);
     let info = read_info(&mut file, &header)?;
         
+    debug!("read attr");
     let attrs = (0..(header.attrs.size / header.attr_size)).map(|i| {
         file.seek(io::SeekFrom::Start(header.attrs.offset + i * header.attr_size))?;
         let attr = read_raw::<EventAttributes>(&mut file)?;
@@ -604,6 +619,7 @@ pub fn read_perf_file<P: std::convert::AsRef<std::path::Path>>(path: &P) -> Resu
     let mut size = 0;
     let mut start = std::u64::MAX;
     let mut end = 0;
+    debug!("read events");
     while size < header.data.size {
         let event_header = read_raw::<EventHeader>(&mut file)?;
         debug!("{:x} {:?}", position, event_header);
