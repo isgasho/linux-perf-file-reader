@@ -82,7 +82,7 @@ struct PerfHeader {
 }
 
 #[repr(u32)]
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 #[allow(dead_code)]
 pub enum PerfType {
     Hardware		= 0,
@@ -94,7 +94,7 @@ pub enum PerfType {
 }
 
 #[repr(u64)]
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 #[allow(dead_code)]
 pub enum HwId {
     CpuCycles		        = 0,
@@ -111,6 +111,7 @@ pub enum HwId {
 
 pub mod attr_flags {
     bitflags! {
+        #[derive(Serialize)]
         pub flags AttrFlags: u64 {
             const DISABLED          = 1, /* off by default        */
             const INHERIT           = 1 << 1, /* children inherit it   */
@@ -154,6 +155,7 @@ pub mod attr_flags {
 
 pub mod sample_format {
     bitflags!{
+        #[derive(Serialize)]
         pub flags SampleFormat: u64 {
             const IP	    	= 1 << 0,
             const TID			= 1 << 1,
@@ -180,6 +182,7 @@ pub mod sample_format {
 
 pub mod read_format {
     bitflags!{
+        #[derive(Serialize)]
         pub flags ReadFormat: u64 {
             const TOTAL_TIME_ENABLED    = 1 << 0,
             const TOTAL_TIME_RUNNING	= 1 << 1,
@@ -190,7 +193,7 @@ pub mod read_format {
 }
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct EventAttributes {
 	pub perf_type: PerfType, //Major type: hardware/software/tracepoint/etc.
 	pub size: u32,
@@ -317,11 +320,13 @@ pub struct Info {
     pub os_release: Option<String>,
     pub tools_version: Option<String>,
     pub arch: Option<String>,
+    pub cpu_count: Option<CpuCount>,
     pub cpu_description: Option<String>,
     pub cpu_id: Option<String>,
     pub total_memory: Option<u64>,
     pub command_line: Option<Vec<String>>,
     pub cpu_topology: Option<Vec<String>>,
+    pub event_description: Option<Vec<EventDescription>>,
     // TODO add others
 }
 
@@ -523,6 +528,27 @@ impl<'a> HeaderInfoReader<'a> {
         }
     }
 
+    fn get_event_description(&mut self) -> io::Result<Option<Vec<EventDescription>>> {
+        if self.flags.contains(header_flags::EVENT_DESC) && self.sections.len() > self.current {
+            self.seek()?;
+            let count = read_raw::<u32>(self.file)? as usize;
+            let size = read_raw::<u32>(self.file)? as i64;
+            debug!("read EVENT_DESC: count {}, size {}", count, size);
+            let all_attributes = collect_n(count, ||{
+                let attributes = read_raw::<EventAttributes>(self.file)?;
+                self.file.seek(io::SeekFrom::Current(size - mem::size_of::<EventAttributes>() as i64))?;
+                let id_count = read_raw::<u32>(self.file)? as usize;
+                let name_size = read_raw::<u32>(self.file)?;
+                let name = read_string(self.file, name_size as usize)?;
+                let ids = collect_n(id_count, || read_raw::<u64>(self.file));
+                ids.map(|ids|EventDescription{attributes, name, ids})
+            })?;
+            Ok(Some(all_attributes))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn get<T>(&mut self, flag: HeaderFlags) -> io::Result<Option<T>> {
         if self.flags.contains(flag) && self.sections.len() > self.current {
             self.seek()?;
@@ -545,6 +571,20 @@ impl<'a> HeaderInfoReader<'a> {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Serialize)]
+pub struct CpuCount {
+    pub online: u32,
+    pub available: u32
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventDescription {
+    pub attributes: EventAttributes,
+    pub name: String,
+    pub ids: Vec<u64>,
+}
+
 fn read_info(file: &mut File, header: &PerfHeader) -> io::Result<(Info)> {
     let mut reader = HeaderInfoReader::new(file, header)?;
     
@@ -553,12 +593,12 @@ fn read_info(file: &mut File, header: &PerfHeader) -> io::Result<(Info)> {
     let os_release = reader.get_string(header_flags::OSRELEASE)?;
     let tools_version = reader.get_string(header_flags::VERSION)?;
     let arch = reader.get_string(header_flags::ARCH)?;
-    reader.skip(header_flags::NRCPUS);
+    let cpu_count = reader.get::<CpuCount>(header_flags::NRCPUS)?;
     let cpu_description = reader.get_string(header_flags::CPUDESC)?;
     let cpu_id = reader.get_string(header_flags::CPUID)?;
     let total_memory = reader.get::<u64>(header_flags::TOTAL_MEM)?;
     let command_line = reader.get_string_array(header_flags::CMDLINE)?;
-    reader.skip(header_flags::EVENT_DESC);
+    let event_description = reader.get_event_description()?;
     let cpu_topology = reader.get_string_array(header_flags::CPU_TOPOLOGY)?;
     reader.skip(header_flags::NUMA_TOPOLOGY);
     reader.skip(header_flags::BRANCH_STACK);
@@ -571,8 +611,8 @@ fn read_info(file: &mut File, header: &PerfHeader) -> io::Result<(Info)> {
         warn!("Unknown flags in header");
     }
 
-    return Ok((Info{hostname: hostname, os_release: os_release, tools_version: tools_version,
-        arch: arch, cpu_id: cpu_id, cpu_description: cpu_description, total_memory: total_memory, command_line: command_line, cpu_topology: cpu_topology}));
+    return Ok((Info{hostname, os_release, tools_version, cpu_count, event_description,
+        arch, cpu_id, cpu_description, total_memory, command_line, cpu_topology}));
 }
 
 pub fn is_perf_file<P: std::convert::AsRef<std::path::Path>>(path: &P) -> Result<(bool)> {
