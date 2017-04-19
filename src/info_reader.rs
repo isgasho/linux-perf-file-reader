@@ -126,7 +126,7 @@ impl<'a> HeaderInfoReader<'a> {
             self.seek(header_flags::EVENT_DESC)?;
             let count = read_raw::<u32>(self.file)? as usize;
             let size = read_raw::<u32>(self.file)? as i64;
-            debug!("read EVENT_DESC: count {}, size {}", count, size);
+            debug!(" EVENT_DESC: count {}, size {}", count, size);
             let all_attributes = collect_n(count, || {
                 let attributes = read_raw::<EventAttributes>(self.file)?;
                 self.file
