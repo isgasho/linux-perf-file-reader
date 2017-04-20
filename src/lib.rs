@@ -41,8 +41,8 @@ mod errors {
                 display("cannot read dump without event info")
             }
             NoIndentifierInEventInInfoAttributes {
-                description("cannot read dump without IDENTIFIER flag")
-                display("cannot read dump without IDENTIFIER flag")
+                description("cannot read dump without IDENTIFIER flag and different sample format")
+                display("cannot read dump without IDENTIFIER flag and different sample format")
             }
         }
     }

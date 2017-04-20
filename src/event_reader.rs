@@ -101,7 +101,8 @@ impl SampleReader {
         if event_desciptions.len() == 0 {
             Err(ErrorKind::NoEventInInfoSection.into())
         } else if event_desciptions.len() > 1 && 
-                  !event_desciptions.iter().all(|d| d.attributes.sample_format.contains(sample_format::IDENTIFIER)) {
+                  !event_desciptions.iter().all(|d| d.attributes.sample_format.contains(sample_format::IDENTIFIER)) &&
+                  !event_desciptions.iter().all(|d| d.attributes.sample_format == event_desciptions[0].attributes.sample_format) {
             Err(ErrorKind::NoIndentifierInEventInInfoAttributes.into())
         } else {
             let first = event_desciptions[0].attributes.sample_format;
