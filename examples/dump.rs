@@ -72,7 +72,10 @@ fn main() {
                         print_if_some!(" {}: {}", pid, tid, time, id, identifier, stream_id, cpu, res, period);
                         println!("");
                         if !call_chain.is_empty() {
-                            println!("  call chain: {:?}", call_chain);
+                            println!("  call chain: ");
+                            for addr in call_chain.iter() {
+                                println!("    {:x}", addr);
+                            }
                         }
                     },
                     &Event::FinishedRound => {}

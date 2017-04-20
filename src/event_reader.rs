@@ -1,5 +1,5 @@
 use ::*;
-use tools::{read_raw, read_string};
+use tools::{read_raw, read_string, collect_n};
 use std::io::{Read, Seek};
 use std::collections::HashMap; 
 
@@ -169,7 +169,11 @@ impl SampleReader {
         let cpu = bool_to_option!(s.contains(sample_format::CPU), read_raw(file)?);
         let res = bool_to_option!(s.contains(sample_format::CPU), read_raw(file)?);
         let period = bool_to_option!(s.contains(sample_format::PERIOD), read_raw(file)?);
-        let call_chain = vec![];// TODO support stacks
+        let call_chain = if !s.contains(sample_format::CALLCHAIN) {
+            vec![]
+        } else {
+            collect_n(read_raw::<u64>(file)? as usize, || read_raw::<u64>(file))?
+        };
         use Event::Sample;
         Ok(ctr!(Sample{identifier, ip, pid, tid, time, addr, id, stream_id, cpu, res, period, call_chain}))
     }
